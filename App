@@ -1,0 +1,113 @@
+from kivy.app import App
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.listview import ListView, ListAdapter
+from kivy.uix.label import Label
+from kivy.uix.textinput import TextInput
+from kivy.uix.button import Button
+from kivy.uix.checkbox import CheckBox
+from kivy.uix.scrollview import ScrollView
+from kivy.storage.jsonstore import JsonStore
+import pandas as pd
+from plyer import notification
+import threading
+import time
+import os
+
+# Obtener ruta del archivo en Android
+file_path = os.path.join(os.getcwd(), "GRILLA_CON_HORARIOS_COSQUIN_ROCK_25.xlsx")
+df = pd.read_excel(file_path, sheet_name="Hoja1")
+
+# Almacenar selección de eventos
+store = JsonStore('eventos.json')
+
+def buscar_artista(nombre):
+    resultado = df[df['ARTISTA / BANDA'].str.contains(nombre, case=False, na=False)]
+    return resultado
+
+def notificar(evento, hora):
+    tiempo_actual = time.time()
+    tiempo_evento = time.mktime(time.strptime(hora, "%H:%M"))
+    tiempo_espera = max(0, tiempo_evento - tiempo_actual - (15 * 60))
+    time.sleep(tiempo_espera)
+    notification.notify(
+        title="Recordatorio de Show",
+        message=f"{evento} está por comenzar!",
+        timeout=10
+    )
+
+class FestivalApp(BoxLayout):
+    def __init__(self, **kwargs):
+        super().__init__(orientation='vertical', **kwargs)
+
+        self.search_input = TextInput(hint_text='Buscar artista...')
+        self.search_input.bind(on_text_validate=self.mostrar_resultados)  # Buscar al presionar Enter
+        self.add_widget(self.search_input)
+
+        self.search_button = Button(text='Buscar', size_hint=(1, 0.2))
+        self.search_button.bind(on_press=self.mostrar_resultados)
+        self.add_widget(self.search_button)
+
+        self.result_label = Label(text='Resultados:', size_hint=(1, 0.2))
+        self.add_widget(self.result_label)
+
+        self.scroll_view = ScrollView()
+        self.result_box = BoxLayout(orientation='vertical', size_hint_y=None)
+        self.result_box.bind(minimum_height=self.result_box.setter('height'))
+        self.scroll_view.add_widget(self.result_box)
+        self.add_widget(self.scroll_view)
+
+        self.add_event_button = Button(text='Incorporar Evento', size_hint=(1, 0.2))
+        self.add_event_button.bind(on_press=self.incorporar_evento)
+        self.add_widget(self.add_event_button)
+
+        self.seleccionados = []
+        self.cargar_eventos_guardados()
+
+    def mostrar_resultados(self, instance):
+        nombre = self.search_input.text
+        resultado = buscar_artista(nombre)
+        self.result_box.clear_widgets()
+        if not resultado.empty:
+            for _, row in resultado.iterrows():
+                evento_text = f"{row['DÍA']} {row['HORA']} - {row['ARTISTA / BANDA']} ({row['ESCENARIO']})"
+                chk = CheckBox()
+                chk.active = row['ARTISTA / BANDA'] in [e['ARTISTA / BANDA'] for e in self.seleccionados]
+                chk.bind(active=lambda instance, value, r=row: self.marcar_evento(value, r))
+                event_label = Label(text=evento_text, size_hint_y=None, height=30)
+                event_box = BoxLayout(orientation='horizontal')
+                event_box.add_widget(event_label)
+                event_box.add_widget(chk)
+                self.result_box.add_widget(event_box)
+        else:
+            self.result_label.text = "No se encontraron resultados"
+
+    def marcar_evento(self, value, row):
+        if value:
+            self.seleccionados.append(row.to_dict())
+            store.put(row['ARTISTA / BANDA'], **row.to_dict())
+            threading.Thread(target=notificar, args=(row['ARTISTA / BANDA'], row['HORA']), daemon=True).start()
+        else:
+            self.seleccionados = [e for e in self.seleccionados if e['ARTISTA / BANDA'] != row['ARTISTA / BANDA']]
+            store.delete(row['ARTISTA / BANDA'])
+
+    def cargar_eventos_guardados(self):
+        for key in store:
+            self.seleccionados.append(store.get(key))
+    
+    def incorporar_evento(self, instance):
+        nuevo_evento = {
+            'DÍA': 'Nuevo',
+            'HORA': '00:00',
+            'ARTISTA / BANDA': 'Artista desconocido',
+            'ESCENARIO': 'Escenario desconocido'
+        }
+        df.loc[len(df)] = nuevo_evento
+        store.put(nuevo_evento['ARTISTA / BANDA'], **nuevo_evento)
+        self.mostrar_resultados(None)
+
+class FestivalSchedulerApp(App):
+    def build(self):
+        return FestivalApp()
+
+if __name__ == '__main__':
+    FestivalSchedulerApp().run()
